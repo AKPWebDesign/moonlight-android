@@ -98,6 +98,11 @@
     <string name="addpc_unknown_host">Unable to resolve PC address. Make sure you didn\'t make a typo in the address.</string>
     <string name="addpc_enter_ip">You must enter an IP address</string>
 
+    <!-- VR -->
+    <string name="category_virtual_reality">VR Settings</string>
+    <string name="title_google_vr_mode">Enable Google VR Virtual Monitor Mode</string>
+    <string name="summary_google_vr_mode">Shows the video stream on a virtual monitor in Google Cardboard</string>
+
     <!-- Preferences -->
     <string name="category_basic_settings">Basic Settings</string>
     <string name="title_resolution_list">Select resolution and FPS target</string>

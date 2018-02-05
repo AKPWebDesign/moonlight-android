@@ -8,7 +8,7 @@ android {
     buildToolsVersion '27.0.3'
 
     defaultConfig {
-        minSdkVersion 16
+        minSdkVersion 24
         targetSdkVersion 27
 
         versionName "5.6.4"
@@ -99,6 +99,8 @@ android {
 }
 
 dependencies {
+    compile 'com.google.vr:sdk-base:1.80.0'
+
     implementation 'org.bouncycastle:bcprov-jdk15on:1.57'
     implementation 'org.bouncycastle:bcpkix-jdk15on:1.57'
     implementation files('libs/jcodec-0.1.9-patched.jar')

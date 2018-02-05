@@ -1,34 +1,6 @@
 package com.limelight;
 
 
-import com.limelight.binding.PlatformBinding;
-import com.limelight.binding.input.ControllerHandler;
-import com.limelight.binding.input.KeyboardTranslator;
-import com.limelight.binding.input.capture.InputCaptureManager;
-import com.limelight.binding.input.capture.InputCaptureProvider;
-import com.limelight.binding.input.TouchContext;
-import com.limelight.binding.input.driver.UsbDriverService;
-import com.limelight.binding.input.evdev.EvdevListener;
-import com.limelight.binding.input.virtual_controller.VirtualController;
-import com.limelight.binding.video.CrashListener;
-import com.limelight.binding.video.MediaCodecDecoderRenderer;
-import com.limelight.binding.video.MediaCodecHelper;
-import com.limelight.nvstream.NvConnection;
-import com.limelight.nvstream.NvConnectionListener;
-import com.limelight.nvstream.StreamConfiguration;
-import com.limelight.nvstream.http.NvApp;
-import com.limelight.nvstream.input.KeyboardPacket;
-import com.limelight.nvstream.input.MouseButtonPacket;
-import com.limelight.nvstream.jni.MoonBridge;
-import com.limelight.preferences.GlPreferences;
-import com.limelight.preferences.PreferenceConfiguration;
-import com.limelight.ui.GameGestures;
-import com.limelight.ui.StreamView;
-import com.limelight.utils.Dialog;
-import com.limelight.utils.ShortcutHelper;
-import com.limelight.utils.SpinnerDialog;
-import com.limelight.utils.UiHelper;
-
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -45,16 +17,20 @@ import android.hardware.input.InputManager;
 import android.media.AudioManager;
 import android.net.ConnectivityManager;
 import android.net.wifi.WifiManager;
+import android.opengl.GLSurfaceView;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.SystemClock;
+import android.util.Log;
 import android.util.Rational;
 import android.view.Display;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.View.OnGenericMotionListener;
@@ -62,14 +38,45 @@ import android.view.View.OnSystemUiVisibilityChangeListener;
 import android.view.View.OnTouchListener;
 import android.view.Window;
 import android.view.WindowManager;
-import android.widget.FrameLayout;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import com.google.vr.ndk.base.AndroidCompat;
+import com.google.vr.ndk.base.GvrLayout;
+import com.limelight.binding.PlatformBinding;
+import com.limelight.binding.input.ControllerHandler;
+import com.limelight.binding.input.KeyboardTranslator;
+import com.limelight.binding.input.TouchContext;
+import com.limelight.binding.input.capture.InputCaptureManager;
+import com.limelight.binding.input.capture.InputCaptureProvider;
+import com.limelight.binding.input.driver.UsbDriverService;
+import com.limelight.binding.input.evdev.EvdevListener;
+import com.limelight.binding.input.virtual_controller.VirtualController;
+import com.limelight.binding.video.CrashListener;
+import com.limelight.binding.video.MediaCodecHelper;
+import com.limelight.nvstream.NvConnection;
+import com.limelight.nvstream.NvConnectionListener;
+import com.limelight.nvstream.StreamConfiguration;
+import com.limelight.nvstream.http.NvApp;
+import com.limelight.nvstream.input.KeyboardPacket;
+import com.limelight.nvstream.input.MouseButtonPacket;
+import com.limelight.nvstream.jni.MoonBridge;
+import com.limelight.preferences.GlPreferences;
+import com.limelight.preferences.PreferenceConfiguration;
+import com.limelight.ui.GameGestures;
+import com.limelight.ui.StreamView;
+import com.limelight.utils.Dialog;
+import com.limelight.utils.ShortcutHelper;
+import com.limelight.utils.SpinnerDialog;
+import com.limelight.utils.UiHelper;
+import com.limelight.vr.MediaCodecDecoderRendererVR;
+import com.limelight.vr.VideoSceneRenderer;
 
-public class Game extends Activity implements SurfaceHolder.Callback,
-    OnGenericMotionListener, OnTouchListener, NvConnectionListener, EvdevListener,
-    OnSystemUiVisibilityChangeListener, GameGestures
+
+public class VirtualRealityGame extends Activity implements OnGenericMotionListener,
+        OnTouchListener, NvConnectionListener, EvdevListener,
+        OnSystemUiVisibilityChangeListener, GameGestures, GvrLayout.ExternalSurfaceListener
 {
     private int lastMouseX = Integer.MIN_VALUE;
     private int lastMouseY = Integer.MIN_VALUE;
@@ -102,9 +109,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean grabComboDown = false;
     private StreamView streamView;
 
-    private ShortcutHelper shortcutHelper;
-
-    private MediaCodecDecoderRenderer decoderRenderer;
+    private MediaCodecDecoderRendererVR decoderRenderer;
     private boolean reportedCrash;
 
     private WifiManager.WifiLock wifiLock;
@@ -124,6 +129,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     };
 
+    private float[] videoTransform = {67.2f, 0.0f, 0.0f, 0.0f, 0.0f, 37.8f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, -98f, 1.0f};
+    private GvrLayout gVrLayout;
+    private GLSurfaceView surfaceView;
+    private VideoSceneRenderer renderer;
+    private boolean hasFirstFrame = false;
+
+    private Runnable refreshViewerProfileRunnable = new Runnable() {
+        @Override
+        public void run() {
+            gVrLayout.getGvrApi().refreshViewerProfile();
+        }
+    };
+
     public static final String EXTRA_HOST = "Host";
     public static final String EXTRA_APP_NAME = "AppName";
     public static final String EXTRA_APP_ID = "AppId";
@@ -133,146 +151,143 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_PC_NAME = "PcName";
     public static final String EXTRA_APP_HDR = "HDR";
 
+    private void setImmersiveSticky() {
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        boolean launchCardboardMode = PreferenceConfiguration.readPreferences(this).googleCardboardMode;
-        if (launchCardboardMode) {
-            Intent intent = new Intent(this, VirtualRealityGame.class);
-            intent.putExtras(Game.this.getIntent());
-            startActivity(intent);
+        UiHelper.setLocale(this);
+
+        // We don't want a title bar
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        // Full-screen and don't let the display go off
+        getWindow().addFlags(
+                WindowManager.LayoutParams.FLAG_FULLSCREEN |
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // If we're going to use immersive mode, we want to have
+        // the entire screen
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+
+        // Listen for UI visibility events
+        getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
+
+        // Change volume button behavior
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+
+        // Inflate the content
+        setContentView(R.layout.activity_game);
+
+        // Start the spinner
+        spinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
+                getResources().getString(R.string.conn_establishing_msg), true);
+
+        // Read the stream preferences
+        prefConfig = PreferenceConfiguration.readPreferences(this);
+        tombstonePrefs = VirtualRealityGame.this.getSharedPreferences("DecoderTombstone", 0);
+
+
+        // Listen for events on the game surface
+        streamView = findViewById(R.id.surfaceView);
+        streamView.setOnGenericMotionListener(this);
+        streamView.setOnTouchListener(this);
+
+        inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // The view must be focusable for pointer capture to work.
+            streamView.setFocusable(true);
+            streamView.setDefaultFocusHighlightEnabled(false);
+            streamView.setOnCapturedPointerListener(new View.OnCapturedPointerListener() {
+                @Override
+                public boolean onCapturedPointer(View view, MotionEvent motionEvent) {
+                    return handleMotionEvent(motionEvent);
+                }
+            });
+        }
+
+        // Warn the user if they're on a metered connection
+        ConnectivityManager connMgr = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connMgr != null && connMgr.isActiveNetworkMetered()) {
+            displayTransientMessage(getResources().getString(R.string.conn_metered));
+        }
+
+        // Make sure Wi-Fi is fully powered up
+        WifiManager wifiMgr = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        wifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Limelight");
+        wifiLock.setReferenceCounted(false);
+        wifiLock.acquire();
+
+        String host = VirtualRealityGame.this.getIntent().getStringExtra(EXTRA_HOST);
+        String appName = VirtualRealityGame.this.getIntent().getStringExtra(EXTRA_APP_NAME);
+        int appId = VirtualRealityGame.this.getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
+        String uniqueId = VirtualRealityGame.this.getIntent().getStringExtra(EXTRA_UNIQUEID);
+        boolean remote = VirtualRealityGame.this.getIntent().getBooleanExtra(EXTRA_STREAMING_REMOTE, false);
+        String uuid = VirtualRealityGame.this.getIntent().getStringExtra(EXTRA_PC_UUID);
+        String pcName = VirtualRealityGame.this.getIntent().getStringExtra(EXTRA_PC_NAME);
+        boolean willStreamHdr = VirtualRealityGame.this.getIntent().getBooleanExtra(EXTRA_APP_HDR, false);
+
+        if (appId == StreamConfiguration.INVALID_APP_ID) {
             finish();
             return;
-        } else {
-            UiHelper.setLocale(this);
+        }
 
-            // We don't want a title bar
-            requestWindowFeature(Window.FEATURE_NO_TITLE);
+        // Add a launcher shortcut for this PC (forced, since this is user interaction)
+        ShortcutHelper shortcutHelper = new ShortcutHelper(this);
+        shortcutHelper.createAppViewShortcut(uuid, pcName, uuid, true);
+        shortcutHelper.reportShortcutUsed(uuid);
 
-            // Full-screen and don't let the display go off
-            getWindow().addFlags(
-                    WindowManager.LayoutParams.FLAG_FULLSCREEN |
-                            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        // Initialize the MediaCodec helper before creating the decoder
+        GlPreferences glPrefs = GlPreferences.readPreferences(this);
+        MediaCodecHelper.initialize(this, glPrefs.glRenderer);
 
-            // If we're going to use immersive mode, we want to have
-            // the entire screen
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
-                getWindow().getDecorView().setSystemUiVisibility(
-                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
-
-                getWindow().addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+        // Check if the user has enabled HDR
+        if (prefConfig.enableHdr) {
+            // Check if the app supports it
+            if (!willStreamHdr) {
+                Toast.makeText(this, "This game does not support HDR10", Toast.LENGTH_SHORT).show();
             }
+            // It does, so start our HDR checklist
+            else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                // We already know the app supports HDR if willStreamHdr is set.
+                Display display = getWindowManager().getDefaultDisplay();
+                Display.HdrCapabilities hdrCaps = display.getHdrCapabilities();
 
-            // Listen for UI visibility events
-            getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
-
-            // Change volume button behavior
-            setVolumeControlStream(AudioManager.STREAM_MUSIC);
-
-            // Inflate the content
-            setContentView(R.layout.activity_game);
-
-            // Start the spinner
-            spinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
-                    getResources().getString(R.string.conn_establishing_msg), true);
-
-            // Read the stream preferences
-            prefConfig = PreferenceConfiguration.readPreferences(this);
-            tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
-
-
-            // Listen for events on the game surface
-            streamView = findViewById(R.id.surfaceView);
-            streamView.setOnGenericMotionListener(this);
-            streamView.setOnTouchListener(this);
-
-            inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // The view must be focusable for pointer capture to work.
-                streamView.setFocusable(true);
-                streamView.setDefaultFocusHighlightEnabled(false);
-                streamView.setOnCapturedPointerListener(new View.OnCapturedPointerListener() {
-                    @Override
-                    public boolean onCapturedPointer(View view, MotionEvent motionEvent) {
-                        return handleMotionEvent(motionEvent);
+                // We must now ensure our display is compatible with HDR10
+                boolean foundHdr10 = false;
+                for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
+                    if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
+                        LimeLog.info("Display supports HDR10");
+                        foundHdr10 = true;
                     }
-                });
-            }
-
-            // Warn the user if they're on a metered connection
-            ConnectivityManager connMgr = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (connMgr.isActiveNetworkMetered()) {
-                displayTransientMessage(getResources().getString(R.string.conn_metered));
-            }
-
-            // Make sure Wi-Fi is fully powered up
-            WifiManager wifiMgr = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            wifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Limelight");
-            wifiLock.setReferenceCounted(false);
-            wifiLock.acquire();
-
-            String host = Game.this.getIntent().getStringExtra(EXTRA_HOST);
-            String appName = Game.this.getIntent().getStringExtra(EXTRA_APP_NAME);
-            int appId = Game.this.getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
-            String uniqueId = Game.this.getIntent().getStringExtra(EXTRA_UNIQUEID);
-            boolean remote = Game.this.getIntent().getBooleanExtra(EXTRA_STREAMING_REMOTE, false);
-            String uuid = Game.this.getIntent().getStringExtra(EXTRA_PC_UUID);
-            String pcName = Game.this.getIntent().getStringExtra(EXTRA_PC_NAME);
-            boolean willStreamHdr = Game.this.getIntent().getBooleanExtra(EXTRA_APP_HDR, false);
-
-            if (appId == StreamConfiguration.INVALID_APP_ID) {
-                finish();
-                return;
-            }
-
-            // Add a launcher shortcut for this PC (forced, since this is user interaction)
-            shortcutHelper = new ShortcutHelper(this);
-            shortcutHelper.createAppViewShortcut(uuid, pcName, uuid, true);
-            shortcutHelper.reportShortcutUsed(uuid);
-
-            // Initialize the MediaCodec helper before creating the decoder
-            GlPreferences glPrefs = GlPreferences.readPreferences(this);
-            MediaCodecHelper.initialize(this, glPrefs.glRenderer);
-
-            // Check if the user has enabled HDR
-            if (prefConfig.enableHdr) {
-                // Check if the app supports it
-                if (!willStreamHdr) {
-                    Toast.makeText(this, "This game does not support HDR10", Toast.LENGTH_SHORT).show();
                 }
-                // It does, so start our HDR checklist
-                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    // We already know the app supports HDR if willStreamHdr is set.
-                    Display display = getWindowManager().getDefaultDisplay();
-                    Display.HdrCapabilities hdrCaps = display.getHdrCapabilities();
 
-                    // We must now ensure our display is compatible with HDR10
-                    boolean foundHdr10 = false;
-                    for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
-                        if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
-                            LimeLog.info("Display supports HDR10");
-                            foundHdr10 = true;
-                        }
-                    }
-
-                    if (!foundHdr10) {
-                        // Nope, no HDR for us :(
-                        willStreamHdr = false;
-                        Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
-                    }
-                } else {
-                    Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
+                if (!foundHdr10) {
+                    // Nope, no HDR for us :(
                     willStreamHdr = false;
+                    Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
                 }
-            } else {
+            }
+            else {
+                Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
                 willStreamHdr = false;
             }
+        }
+        else {
+            willStreamHdr = false;
+        }
 
-            decoderRenderer = new MediaCodecDecoderRenderer(prefConfig,
+        if (connMgr != null) {
+            decoderRenderer = new MediaCodecDecoderRendererVR(prefConfig,
                     new CrashListener() {
                         @Override
                         public void notifyCrash(Exception e) {
@@ -280,7 +295,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             // let's tell the user something when they open the app again
 
                             // We must use commit because the app will crash when we return from this function
-                            tombstonePrefs.edit().putInt("CrashCount", tombstonePrefs.getInt("CrashCount", 0) + 1).commit();
+                            tombstonePrefs.edit().putInt("CrashCount", tombstonePrefs.getInt("CrashCount", 0) + 1).apply();
                             reportedCrash = true;
                         }
                     },
@@ -289,100 +304,141 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     willStreamHdr,
                     glPrefs.glRenderer
             );
-
-            // Don't stream HDR if the decoder can't support it
-            if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported()) {
-                willStreamHdr = false;
-                Toast.makeText(this, "Decoder does not support HEVC Main10HDR10", Toast.LENGTH_LONG).show();
-            }
-
-            // Display a message to the user if H.265 was forced on but we still didn't find a decoder
-            if (prefConfig.videoFormat == PreferenceConfiguration.FORCE_H265_ON && !decoderRenderer.isHevcSupported()) {
-                Toast.makeText(this, "No H.265 decoder found.\nFalling back to H.264.", Toast.LENGTH_LONG).show();
-            }
-
-            int gamepadMask = ControllerHandler.getAttachedControllerMask(this);
-            if (!prefConfig.multiController && gamepadMask != 0) {
-                // If any gamepads are present in non-MC mode, set only gamepad 1.
-                gamepadMask = 1;
-            }
-            if (prefConfig.onscreenController) {
-                // If we're using OSC, always set at least gamepad 1.
-                gamepadMask |= 1;
-            }
-
-            // Set to the optimal mode for streaming
-            float displayRefreshRate = prepareDisplayForRendering();
-            LimeLog.info("Display refresh rate: " + displayRefreshRate);
-
-            StreamConfiguration config = new StreamConfiguration.Builder()
-                    .setResolution(prefConfig.width, prefConfig.height)
-                    .setRefreshRate(prefConfig.fps)
-                    .setApp(new NvApp(appName, appId, willStreamHdr))
-                    .setBitrate(prefConfig.bitrate * 1000)
-                    .setEnableSops(prefConfig.enableSops)
-                    .enableLocalAudioPlayback(prefConfig.playHostAudio)
-                    .setMaxPacketSize((remote || prefConfig.width <= 1920) ? 1024 : 1292)
-                    .setRemote(remote)
-                    .setHevcBitratePercentageMultiplier(75)
-                    .setHevcSupported(decoderRenderer.isHevcSupported())
-                    .setEnableHdr(willStreamHdr)
-                    .setAttachedGamepadMask(gamepadMask)
-                    .setClientRefreshRateX100((int) (displayRefreshRate * 100))
-                    .setAudioConfiguration(prefConfig.enable51Surround ?
-                            MoonBridge.AUDIO_CONFIGURATION_51_SURROUND :
-                            MoonBridge.AUDIO_CONFIGURATION_STEREO)
-                    .build();
-
-            // Initialize the connection
-            conn = new NvConnection(host, uniqueId, config, PlatformBinding.getCryptoProvider(this));
-            controllerHandler = new ControllerHandler(this, conn, this, prefConfig.multiController, prefConfig.deadzonePercentage);
-
-            InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
-            inputManager.registerInputDeviceListener(controllerHandler, null);
-
-            // Initialize touch contexts
-            for (int i = 0; i < touchContextMap.length; i++) {
-                touchContextMap[i] = new TouchContext(conn, i,
-                        REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
-                        streamView);
-            }
-
-            // Use sustained performance mode on N+ to ensure consistent
-            // CPU availability
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                getWindow().setSustainedPerformanceMode(true);
-            }
-
-            if (prefConfig.onscreenController) {
-                // create virtual onscreen controller
-                virtualController = new VirtualController(conn,
-                        (FrameLayout) streamView.getParent(),
-                        this);
-                virtualController.refreshLayout();
-            }
-
-            if (prefConfig.usbDriver) {
-                // Start the USB driver
-                bindService(new Intent(this, UsbDriverService.class),
-                        usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
-            }
-
-            if (!decoderRenderer.isAvcSupported()) {
-                if (spinner != null) {
-                    spinner.dismiss();
-                    spinner = null;
-                }
-
-                // If we can't find an AVC decoder, we can't proceed
-                Dialog.displayDialog(this, getResources().getString(R.string.conn_error_title),
-                        "This device or ROM doesn't support hardware accelerated H.264 playback.", true);
-                return;
-            }
-
-            // The connection will be started when the surface gets created
-            streamView.getHolder().addCallback(this);
         }
+
+        // Don't stream HDR if the decoder can't support it
+        if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported()) {
+            willStreamHdr = false;
+            Toast.makeText(this, "Decoder does not support HEVC Main10HDR10", Toast.LENGTH_LONG).show();
+        }
+
+        // Display a message to the user if H.265 was forced on but we still didn't find a decoder
+        if (prefConfig.videoFormat == PreferenceConfiguration.FORCE_H265_ON && !decoderRenderer.isHevcSupported()) {
+            Toast.makeText(this, "No H.265 decoder found.\nFalling back to H.264.", Toast.LENGTH_LONG).show();
+        }
+
+        int gamepadMask = ControllerHandler.getAttachedControllerMask(this);
+        if (!prefConfig.multiController && gamepadMask != 0) {
+            // If any gamepads are present in non-MC mode, set only gamepad 1.
+            gamepadMask = 1;
+        }
+        if (prefConfig.onscreenController) {
+            // If we're using OSC, always set at least gamepad 1.
+            gamepadMask |= 1;
+        }
+
+        // Set to the optimal mode for streaming
+        float displayRefreshRate = prepareDisplayForRendering();
+        LimeLog.info("Display refresh rate: "+displayRefreshRate);
+
+        StreamConfiguration config = new StreamConfiguration.Builder()
+                .setResolution(prefConfig.width, prefConfig.height)
+                .setRefreshRate(prefConfig.fps)
+                .setApp(new NvApp(appName, appId, willStreamHdr))
+                .setBitrate(prefConfig.bitrate * 1000)
+                .setEnableSops(prefConfig.enableSops)
+                .enableLocalAudioPlayback(prefConfig.playHostAudio)
+                .setMaxPacketSize((remote || prefConfig.width <= 1920) ? 1024 : 1292)
+                .setRemote(remote)
+                .setHevcBitratePercentageMultiplier(75)
+                .setHevcSupported(decoderRenderer.isHevcSupported())
+                .setEnableHdr(willStreamHdr)
+                .setAttachedGamepadMask(gamepadMask)
+                .setClientRefreshRateX100((int)(displayRefreshRate * 100))
+                .setAudioConfiguration(prefConfig.enable51Surround ?
+                        MoonBridge.AUDIO_CONFIGURATION_51_SURROUND :
+                        MoonBridge.AUDIO_CONFIGURATION_STEREO)
+                .build();
+
+        setImmersiveSticky();
+        getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(new OnSystemUiVisibilityChangeListener() {
+            @Override
+            public void onSystemUiVisibilityChange(int visibility) {
+                if ((visibility & View.SYSTEM_UI_FLAG_FULLSCREEN) == 0) {
+                    setImmersiveSticky();
+                }
+            }
+        });
+
+        AndroidCompat.setSustainedPerformanceMode(this, true);
+        AndroidCompat.setVrModeEnabled(this, true);
+
+        gVrLayout = new GvrLayout(this);
+        surfaceView = new GLSurfaceView(this);
+        surfaceView.setEGLContextClientVersion(3);
+        surfaceView.setEGLConfigChooser(5, 6, 5, 0, 0, 0);
+
+        surfaceView.setOnGenericMotionListener(this);
+
+        gVrLayout.setPresentationView(surfaceView);
+        gVrLayout.setKeepScreenOn(true);
+        renderer = new VideoSceneRenderer(this, gVrLayout.getGvrApi());
+
+        // Initialize the connection
+        conn = new NvConnection(host, uniqueId, config, PlatformBinding.getCryptoProvider(this));
+        controllerHandler = new ControllerHandler(this, conn, this, prefConfig.multiController, prefConfig.deadzonePercentage);
+
+        InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
+        inputManager.registerInputDeviceListener(controllerHandler, null);
+
+        // Initialize touch contexts
+        for (int i = 0; i < touchContextMap.length; i++) {
+            touchContextMap[i] = new TouchContext(conn, i,
+                    REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
+                    streamView);
+        }
+
+        // Use sustained performance mode on N+ to ensure consistent
+        // CPU availability
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            getWindow().setSustainedPerformanceMode(true);
+        }
+
+        if (prefConfig.onscreenController) {
+            // create virtual onscreen controller
+            virtualController = new VirtualController(conn,
+                    (FrameLayout)streamView.getParent(),
+                    this);
+            virtualController.refreshLayout();
+        }
+
+        if (prefConfig.usbDriver) {
+            // Start the USB driver
+            bindService(new Intent(this, UsbDriverService.class),
+                    usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
+        }
+
+        boolean isSurfaceEnabled = gVrLayout.enableAsyncReprojectionVideoSurface(
+                VirtualRealityGame.this,
+                new Handler(Looper.getMainLooper()),
+                false
+        );
+
+        boolean isAsyncReprojectionEnabled = gVrLayout.setAsyncReprojectionEnabled(true);
+
+        if (!isSurfaceEnabled || !isAsyncReprojectionEnabled) {
+            Log.e("MoonlightVR", "UnsupportedException: Async Reprojection isn't working.");
+        } else {
+            renderer.setVideoTransform(videoTransform);
+            renderer.setVideoSurfaceId(gVrLayout.getAsyncReprojectionVideoSurfaceId());
+        }
+
+
+        if (!decoderRenderer.isAvcSupported()) {
+            if (spinner != null) {
+                spinner.dismiss();
+                spinner = null;
+            }
+
+            // If we can't find an AVC decoder, we can't proceed
+            Dialog.displayDialog(this, getResources().getString(R.string.conn_error_title),
+                    "This device or ROM doesn't support hardware accelerated H.264 playback.", true);
+            return;
+        }
+
+        surfaceView.setRenderer(renderer);
+
+        setContentView(gVrLayout);
     }
 
     @Override
@@ -517,30 +573,30 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @SuppressLint("InlinedApi")
     private final Runnable hideSystemUi = new Runnable() {
-            @Override
-            public void run() {
-                // In multi-window mode on N+, we need to drop our layout flags or we'll
-                // be drawing underneath the system UI.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInMultiWindowMode()) {
-                    Game.this.getWindow().getDecorView().setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-                }
-                // Use immersive mode on 4.4+ or standard low profile on previous builds
-                else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                    Game.this.getWindow().getDecorView().setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
-                            View.SYSTEM_UI_FLAG_FULLSCREEN |
-                            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-                }
-                else {
-                    Game.this.getWindow().getDecorView().setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_FULLSCREEN |
-                            View.SYSTEM_UI_FLAG_LOW_PROFILE);
-                }
+        @Override
+        public void run() {
+            // In multi-window mode on N+, we need to drop our layout flags or we'll
+            // be drawing underneath the system UI.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInMultiWindowMode()) {
+                VirtualRealityGame.this.getWindow().getDecorView().setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
             }
+            // Use immersive mode on 4.4+ or standard low profile on previous builds
+            else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                VirtualRealityGame.this.getWindow().getDecorView().setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                                View.SYSTEM_UI_FLAG_FULLSCREEN |
+                                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+            }
+            else {
+                VirtualRealityGame.this.getWindow().getDecorView().setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_FULLSCREEN |
+                                View.SYSTEM_UI_FLAG_LOW_PROFILE);
+            }
+        }
     };
 
     private void hideSystemUi(int delay) {
@@ -583,19 +639,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     protected void onDestroy() {
         super.onDestroy();
 
-        boolean launchCardboardMode = PreferenceConfiguration.readPreferences(this).googleCardboardMode;
-        if (launchCardboardMode) {
-            return;
-        }
-
         if (controllerHandler != null) {
             InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
             inputManager.unregisterInputDeviceListener(controllerHandler);
         }
 
-        if (wifiLock != null) {
-            wifiLock.release();
-        }
+        wifiLock.release();
 
         if (connectedToUsbDriverService) {
             // Unbind from the discovery service
@@ -604,6 +653,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Destroy the capture provider
         inputCaptureProvider.destroy();
+
+        gVrLayout.shutdown();
     }
 
     @Override
@@ -658,6 +709,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
 
+        gVrLayout.onPause();
+
         finish();
     }
 
@@ -680,15 +733,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         int modifierMask = 0;
 
         if (androidKeyCode == KeyEvent.KEYCODE_CTRL_LEFT ||
-            androidKeyCode == KeyEvent.KEYCODE_CTRL_RIGHT) {
+                androidKeyCode == KeyEvent.KEYCODE_CTRL_RIGHT) {
             modifierMask = KeyboardPacket.MODIFIER_CTRL;
         }
         else if (androidKeyCode == KeyEvent.KEYCODE_SHIFT_LEFT ||
-                 androidKeyCode == KeyEvent.KEYCODE_SHIFT_RIGHT) {
+                androidKeyCode == KeyEvent.KEYCODE_SHIFT_RIGHT) {
             modifierMask = KeyboardPacket.MODIFIER_SHIFT;
         }
         else if (androidKeyCode == KeyEvent.KEYCODE_ALT_LEFT ||
-                 androidKeyCode == KeyEvent.KEYCODE_ALT_RIGHT) {
+                androidKeyCode == KeyEvent.KEYCODE_ALT_RIGHT) {
             modifierMask = KeyboardPacket.MODIFIER_ALT;
         }
 
@@ -701,8 +754,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Check if Ctrl+Shift+Z is pressed
         if (androidKeyCode == KeyEvent.KEYCODE_Z &&
-            (modifierFlags & (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_SHIFT)) ==
-                (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_SHIFT))
+                (modifierFlags & (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_SHIFT)) ==
+                        (KeyboardPacket.MODIFIER_CTRL | KeyboardPacket.MODIFIER_SHIFT))
         {
             if (down) {
                 // Now that we've pressed the magic combo
@@ -866,7 +919,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
         else if ((event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0 ||
-                  event.getSource() == InputDevice.SOURCE_MOUSE_RELATIVE)
+                event.getSource() == InputDevice.SOURCE_MOUSE_RELATIVE)
         {
             // This case is for mice
             if (event.getSource() == InputDevice.SOURCE_MOUSE ||
@@ -972,54 +1025,54 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 switch (event.getActionMasked())
                 {
-                case MotionEvent.ACTION_POINTER_DOWN:
-                case MotionEvent.ACTION_DOWN:
-                    context.touchDownEvent(eventX, eventY);
-                    break;
-                case MotionEvent.ACTION_POINTER_UP:
-                case MotionEvent.ACTION_UP:
-                    if (event.getPointerCount() == 1) {
-                        // All fingers up
-                        if (SystemClock.uptimeMillis() - threeFingerDownTime < THREE_FINGER_TAP_THRESHOLD) {
-                            // This is a 3 finger tap to bring up the keyboard
-                            showKeyboard();
-                            return true;
+                    case MotionEvent.ACTION_POINTER_DOWN:
+                    case MotionEvent.ACTION_DOWN:
+                        context.touchDownEvent(eventX, eventY);
+                        break;
+                    case MotionEvent.ACTION_POINTER_UP:
+                    case MotionEvent.ACTION_UP:
+                        if (event.getPointerCount() == 1) {
+                            // All fingers up
+                            if (SystemClock.uptimeMillis() - threeFingerDownTime < THREE_FINGER_TAP_THRESHOLD) {
+                                // This is a 3 finger tap to bring up the keyboard
+                                showKeyboard();
+                                return true;
+                            }
                         }
-                    }
-                    context.touchUpEvent(eventX, eventY);
-                    if (actionIndex == 0 && event.getPointerCount() > 1 && !context.isCancelled()) {
-                        // The original secondary touch now becomes primary
-                        context.touchDownEvent((int)event.getX(1), (int)event.getY(1));
-                    }
-                    break;
-                case MotionEvent.ACTION_MOVE:
-                    // ACTION_MOVE is special because it always has actionIndex == 0
-                    // We'll call the move handlers for all indexes manually
+                        context.touchUpEvent(eventX, eventY);
+                        if (actionIndex == 0 && event.getPointerCount() > 1 && !context.isCancelled()) {
+                            // The original secondary touch now becomes primary
+                            context.touchDownEvent((int)event.getX(1), (int)event.getY(1));
+                        }
+                        break;
+                    case MotionEvent.ACTION_MOVE:
+                        // ACTION_MOVE is special because it always has actionIndex == 0
+                        // We'll call the move handlers for all indexes manually
 
-                    // First process the historical events
-                    for (int i = 0; i < event.getHistorySize(); i++) {
+                        // First process the historical events
+                        for (int i = 0; i < event.getHistorySize(); i++) {
+                            for (TouchContext aTouchContextMap : touchContextMap) {
+                                if (aTouchContextMap.getActionIndex() < event.getPointerCount())
+                                {
+                                    aTouchContextMap.touchMoveEvent(
+                                            (int)event.getHistoricalX(aTouchContextMap.getActionIndex(), i),
+                                            (int)event.getHistoricalY(aTouchContextMap.getActionIndex(), i));
+                                }
+                            }
+                        }
+
+                        // Now process the current values
                         for (TouchContext aTouchContextMap : touchContextMap) {
                             if (aTouchContextMap.getActionIndex() < event.getPointerCount())
                             {
                                 aTouchContextMap.touchMoveEvent(
-                                        (int)event.getHistoricalX(aTouchContextMap.getActionIndex(), i),
-                                        (int)event.getHistoricalY(aTouchContextMap.getActionIndex(), i));
+                                        (int)event.getX(aTouchContextMap.getActionIndex()),
+                                        (int)event.getY(aTouchContextMap.getActionIndex()));
                             }
                         }
-                    }
-
-                    // Now process the current values
-                    for (TouchContext aTouchContextMap : touchContextMap) {
-                        if (aTouchContextMap.getActionIndex() < event.getPointerCount())
-                        {
-                            aTouchContextMap.touchMoveEvent(
-                                    (int)event.getX(aTouchContextMap.getActionIndex()),
-                                    (int)event.getY(aTouchContextMap.getActionIndex()));
-                        }
-                    }
-                    break;
-                default:
-                    return false;
+                        break;
+                    default:
+                        return false;
                 }
             }
 
@@ -1047,8 +1100,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Send a mouse move if we already have a mouse location
         // and the mouse coordinates change
         if (lastMouseX != Integer.MIN_VALUE &&
-            lastMouseY != Integer.MIN_VALUE &&
-            !(lastMouseX == eventX && lastMouseY == eventY))
+                lastMouseY != Integer.MIN_VALUE &&
+                !(lastMouseX == eventX && lastMouseY == eventY))
         {
             int deltaX = eventX - lastMouseX;
             int deltaY = eventY - lastMouseY;
@@ -1124,7 +1177,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(Game.this, "Video decoder failed to initialize. Your device may not support the selected resolution.", Toast.LENGTH_LONG).show();
+                        Toast.makeText(VirtualRealityGame.this, "Video decoder failed to initialize. Your device may not support the selected resolution.", Toast.LENGTH_LONG).show();
                     }
                 });
             }
@@ -1177,7 +1230,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                Toast.makeText(Game.this, message, Toast.LENGTH_LONG).show();
+                Toast.makeText(VirtualRealityGame.this, message, Toast.LENGTH_LONG).show();
             }
         });
     }
@@ -1188,33 +1241,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    Toast.makeText(Game.this, message, Toast.LENGTH_LONG).show();
+                    Toast.makeText(VirtualRealityGame.this, message, Toast.LENGTH_LONG).show();
                 }
             });
-        }
-    }
-
-    @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-    }
-
-    @Override
-    public void surfaceCreated(SurfaceHolder holder) {
-        if (!connected && !connecting) {
-            connecting = true;
-
-            decoderRenderer.setRenderTarget(holder);
-            conn.start(PlatformBinding.getAudioRenderer(), decoderRenderer, Game.this);
-        }
-    }
-
-    @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        // Let the decoder know immediately that the surface is gone
-        decoderRenderer.prepareForStop();
-
-        if (connected) {
-            stopConnection();
         }
     }
 
@@ -1229,18 +1258,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         switch (buttonId)
         {
-        case EvdevListener.BUTTON_LEFT:
-            buttonIndex = MouseButtonPacket.BUTTON_LEFT;
-            break;
-        case EvdevListener.BUTTON_MIDDLE:
-            buttonIndex = MouseButtonPacket.BUTTON_MIDDLE;
-            break;
-        case EvdevListener.BUTTON_RIGHT:
-            buttonIndex = MouseButtonPacket.BUTTON_RIGHT;
-            break;
-        default:
-            LimeLog.warning("Unhandled button: "+buttonId);
-            return;
+            case EvdevListener.BUTTON_LEFT:
+                buttonIndex = MouseButtonPacket.BUTTON_LEFT;
+                break;
+            case EvdevListener.BUTTON_MIDDLE:
+                buttonIndex = MouseButtonPacket.BUTTON_MIDDLE;
+                break;
+            case EvdevListener.BUTTON_RIGHT:
+                buttonIndex = MouseButtonPacket.BUTTON_RIGHT;
+                break;
+            default:
+                LimeLog.warning("Unhandled button: "+buttonId);
+                return;
         }
 
         if (down) {
@@ -1287,13 +1316,54 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         // This flag is only set on 4.4+
         else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT &&
-                 (visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0) {
+                (visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0) {
             hideSystemUi(2000);
         }
         // This flag is only set before 4.4+
         else if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.KITKAT &&
-                 (visibility & View.SYSTEM_UI_FLAG_LOW_PROFILE) == 0) {
+                (visibility & View.SYSTEM_UI_FLAG_LOW_PROFILE) == 0) {
             hideSystemUi(2000);
         }
+    }
+
+    @Override
+    public void onSurfaceAvailable(Surface surface) {
+        Log.d("TEST", "TESTING");
+        if (!connected && !connecting) {
+            connecting = true;
+            conn.start(PlatformBinding.getAudioRenderer(), decoderRenderer, VirtualRealityGame.this);
+            decoderRenderer.setRenderTarget(surface);
+        }
+    }
+
+    @Override
+    public void onFrameAvailable() {
+        if (!hasFirstFrame) {
+            surfaceView.queueEvent(new Runnable() {
+                @Override
+                public void run() {
+                    renderer.setHasVideoPlaybackStarted(true);
+                }
+            });
+
+            hasFirstFrame = true;
+        }
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+
+        hasFirstFrame = false;
+        surfaceView.queueEvent(new Runnable() {
+            @Override
+            public void run() {
+                renderer.setHasVideoPlaybackStarted(false);
+            }
+        });
+
+        gVrLayout.onResume();
+
+        surfaceView.queueEvent(refreshViewerProfileRunnable);
     }
 }

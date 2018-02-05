@@ -122,4 +122,11 @@
             android:summary="@string/summary_enable_hdr"
             android:defaultValue="false" />
     </PreferenceCategory>
+    <PreferenceCategory android:title="@string/category_virtual_reality">
+        <CheckBoxPreference
+            android:key="checkbox_google_vr_mode"
+            android:title="@string/title_google_vr_mode"
+            android:summary="@string/summary_google_vr_mode"
+            android:defaultValue="false" />
+    </PreferenceCategory>
 </PreferenceScreen>

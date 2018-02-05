@@ -8,6 +8,23 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!-- The video API works on Daydream-ready devices with Asynchronous
+         Reprojection on Android N+ and OpenGL ES 2+.. -->
+    <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+
+    <!-- Make accelerometer and gyroscope hard requirements for good head tracking. -->
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="true"/>
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="true"/>
+
+    <!-- Indicates use of Android's VR-mode, available only on Android N+. -->
+     <!-- We use android:required="true" because ControllerPaint is a Daydream-only app.
+         For a Cardboard-compatible app, this should be android:required="false" -->
+    <uses-feature android:name="android.software.vr.mode" android:required="true"/>
+    <!-- Indicates use of VR features that are available only on Daydream-ready devices. -->
+    <!-- We use android:required="true" because ControllerPaint is a Daydream-only app.
+         For a Cardboard-compatible app, this should be android:required="false" -->
+    <uses-feature android:name="android.hardware.vr.high_performance" android:required="true"/>
+
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
@@ -130,6 +147,20 @@
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
                 android:value="com.limelight.PcView" />
+        </activity>
+        <activity
+            android:name=".VirtualRealityGame"
+            android:configChanges="orientation|keyboardHidden|screenSize|keyboard|navigation"
+            android:screenOrientation="landscape"
+            android:enableVrMode="@string/gvr_vr_mode_component">
+            <meta-data
+                android:name="android.support.PARENT_ACTIVITY"
+                android:value="com.limelight.AppView" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="com.google.intent.category.CARDBOARD" />
+                <category android:name="com.google.intent.category.DAYDREAM" />
+            </intent-filter>
         </activity>
     </application>
 
